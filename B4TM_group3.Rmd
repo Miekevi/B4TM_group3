@@ -1,0 +1,55 @@
+---
+title: "B4TM_project"
+author: "Timo Dijkstra"
+date: "2-4-2021"
+output: html_document
+---
+
+# Load packages
+```{r}
+library("tidyverse")
+```
+
+# Load data
+Store all the data as tibble. 
+Make an additional tibble for the DNA region information. The ID is in the format <chromosome>.<#feature>
+```{r}
+train_data_array <- as.tibble(read.table(file = "Train_call.txt", header = T, sep = "\t"))
+
+target_data_array <- read_tsv(file = "Train_clinical.txt")
+
+instances <- colnames(train_data_array)[-c(1:4)]
+
+feature_information <- as.tibble(t(train_data_array[,1:4]))
+names(feature_information) <- paste(train_data_array$Chromosome, ".", as.character(1:dim(train_data_array)[1]), sep = "")
+
+DNA_region_information <- c("Chromosome", "Start", "End", "Nclone")
+rownames(feature_information) <- DNA_region_information
+
+```
+
+
+# Data pre-processing
+Transpose the train data matrix.
+Remove the DNA region information.
+Make the DNA_IDs the new feature names.
+```{r}
+train_data_array <- as.tibble(t(subset(train_data_array, select = -c(Chromosome:Nclone))))
+names(train_data_array) <- colnames(feature_information)
+train_data_array <-  train_data_array %>% add_column(instances, .before = "1.1")
+```
+Add the targets to the train_data_arry. 
+For convenience, place the targets in front of the train data set.
+```{r}
+train_data_array <- train_data_array %>% add_column(target_data_array$Subgroup, .before = "1.1")
+train_data_array <- train_data_array %>% rename(Target = "target_data_array$Subgroup")
+
+```
+
+
+# Feature selection
+```{r}
+
+
+
+```
