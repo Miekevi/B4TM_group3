@@ -188,11 +188,11 @@ pre code {
 <div id="load-data" class="section level1">
 <h1>Load data</h1>
 <p>Store all the data as tibble. Make an additional tibble for the DNA region information. The ID is in the format <chromosome>.&lt;#feature&gt;</p>
-<pre class="r"><code>train_data_array &lt;- as.tibble(read.table(file = &quot;Train_call.txt&quot;, header = T, sep = &quot;\t&quot;))</code></pre>
+<pre class="r"><code>train_data_array &lt;- as.tibble(read.table(file = &quot;data/Train_call.txt&quot;, header = T, sep = &quot;\t&quot;))</code></pre>
 <pre><code>## Warning: `as.tibble()` was deprecated in tibble 2.0.0.
 ## Please use `as_tibble()` instead.
 ## The signature and semantics have changed, see `?as_tibble`.</code></pre>
-<pre class="r"><code>target_data_array &lt;- read_tsv(file = &quot;Train_clinical.txt&quot;)</code></pre>
+<pre class="r"><code>target_data_array &lt;- read_tsv(file = &quot;data/Train_clinical.txt&quot;)</code></pre>
 <pre><code>## 
 ## -- Column specification --------------------------------------------------------
 ## cols(

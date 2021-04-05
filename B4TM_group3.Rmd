@@ -18,9 +18,9 @@ library("tidyverse")
 Store all the data as tibble. 
 Make an additional tibble for the DNA region information. The ID is in the format <chromosome>.<#feature>
 ```{r}
-train_data_array <- as.tibble(read.table(file = "Train_call.txt", header = T, sep = "\t"))
+train_data_array <- as.tibble(read.table(file = "data/Train_call.txt", header = T, sep = "\t"))
 
-target_data_array <- read_tsv(file = "Train_clinical.txt")
+target_data_array <- read_tsv(file = "data/Train_clinical.txt")
 
 instances <- colnames(train_data_array)[-c(1:4)]
 
