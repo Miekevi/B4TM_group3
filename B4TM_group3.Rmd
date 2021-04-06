@@ -19,9 +19,9 @@ library("caret")
 Store all the data as tibble. 
 Make an additional tibble for the DNA region information. The ID is in the format <chromosome>.<#feature>
 ```{r}
-train_data_array_input <- as_tibble(read.table(file = "data\Train_call.txt", header = T, sep = "\t"))
+train_data_array_input <- as.tibble(read.table(file = "data/Train_call.txt", header = T, sep = "\t"))
 
-target_data_array <- read_tsv(file = "data\Train_clinical.txt")
+target_data_array <- read_tsv(file = "data/Train_clinical.txt")
 
 Instances <- colnames(train_data_array_input)[-c(1:4)]
 
@@ -87,7 +87,7 @@ http://www.ensembl.org/Homo_sapiens/Location/Overview?r=17:35076296-35282086;db=
 auc_scores_per_chromosome <- ggplot(data = rocVarImp, mapping = aes(1:2834, rocVarImp[,4], color = as.factor(train_data_array_input$Chromosome))) +
   geom_point() +
   labs(title = "Feature importance",
-       caption = "Sum of square AUC scores",
+       caption = "Sum of AUC scores",
        x = "Feature number",
        y = "Cumulative score")
 auc_scores_per_chromosome <- auc_scores_per_chromosome + guides(color=guide_legend(title = "Chromosome"))
@@ -99,7 +99,7 @@ Plot a histogram of AUC scores of the features using the sum of AUCs..
 auc_scores_histogram <- ggplot(data = rocVarImp, mapping = aes(rocVarImp[,4], color = as.factor(train_data_array_input$Chromosome))) +
   geom_histogram(bins = 30, fill = "white") +
   labs(title = "Feature importance",
-       caption = "Sum of square AUC scores",
+       caption = "Sum of AUC scores",
        x = "Cumulative score",
        y = "Frequency")
 auc_scores_histogram <- auc_scores_histogram + guides(color=guide_legend(title = "Chromosome"))
