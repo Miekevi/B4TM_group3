@@ -1,6 +1,6 @@
 ---
 title: "B4TM_project"
-author: "Timo Dijkstra"
+author: "Timo Dijkstra, Tessa Duk, Mickey van Immerseel, Robin Pocornie"
 date: "2-4-2021"
 knit: (function(input_file, encoding) {
   out_dir <- 'docs';
