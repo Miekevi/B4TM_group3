@@ -25,7 +25,7 @@ target_data_array <- read_tsv(file = "data\Train_clinical.txt")
 
 Instances <- colnames(train_data_array_input)[-c(1:4)]
 
-feature_information <- as.tibble(t(train_data_array_input[,1:4]))
+feature_information <- as_tibble(t(train_data_array_input[,1:4]))
 names(feature_information) <- paste(train_data_array_input$Chromosome, ".", as.character(1:dim(train_data_array_input)[1]), sep = "")
 
 DNA_region_information <- c("Chromosome", "Start", "End", "Nclone")
@@ -39,7 +39,7 @@ Transpose the train data matrix.
 Remove the DNA region information.
 Make the DNA_IDs the new feature names.
 ```{r}
-train_data_array <- as.tibble(t(subset(train_data_array_input, select = -c(Chromosome:Nclone))))
+train_data_array <- as_tibble(t(subset(train_data_array_input, select = -c(Chromosome:Nclone))))
 names(train_data_array) <- colnames(feature_information)
 train_data_array <-  train_data_array %>% add_column(Instances, .before = "1.1")
 ```
