@@ -1,0 +1,135 @@
+---
+title: "B4TM_project"
+author: "Timo Dijkstra, Tessa Duk, Mickey van Immerseel, Robin Pocornie"
+date: "2-4-2021"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+---
+
+# Load packages
+```{r}
+library("tidyverse")
+library("caret")
+```
+
+# Load data
+Store all the data as tibble. 
+Make an additional tibble for the DNA region information. The ID is in the format <chromosome>.<#feature>
+```{r}
+train_data_array_input <- as.tibble(read.table(file = "data/Train_call.txt", header = T, sep = "\t"))
+
+target_data_array <- read_tsv(file = "data/Train_clinical.txt")
+
+Instances <- colnames(train_data_array_input)[-c(1:4)]
+
+feature_information <- as_tibble(t(train_data_array_input[,1:4]))
+names(feature_information) <- paste(train_data_array_input$Chromosome, ".", as.character(1:dim(train_data_array_input)[1]), sep = "")
+
+DNA_region_information <- c("Chromosome", "Start", "End", "Nclone")
+rownames(feature_information) <- DNA_region_information
+
+```
+
+
+# Data pre-processing
+Transpose the train data matrix.
+Remove the DNA region information.
+Make the DNA_IDs the new feature names.
+```{r}
+train_data_array <- as_tibble(t(subset(train_data_array_input, select = -c(Chromosome:Nclone))))
+names(train_data_array) <- colnames(feature_information)
+train_data_array <-  train_data_array %>% add_column(Instances, .before = "1.1")
+```
+Add the targets to the train_data_arry. 
+For convenience, place the targets in front of the train data set.
+```{r}
+train_data_array <- train_data_array %>% add_column(target_data_array$Subgroup, .before = "1.1")
+train_data_array <- train_data_array %>% rename(Target = "target_data_array$Subgroup")
+
+```
+
+
+# Feature selection
+Split the data in a training set with features and a training set with targets (predictions).
+Transform the training set to a data frame.
+Transform the targets to an object of class "factor".
+```{r}
+train_x <- select(train_data_array, -Target)
+train_y <- select(train_data_array, -c(3:dim(train_data_array)[2]))
+
+train_x_df <- as.data.frame(select(train_data_array, -c(Instances, Target)))
+rownames(train_x_df) <- Instances
+
+train_y_df <- as.data.frame(select(train_data_array, -c(3:dim(train_data_array)[2], Instances)))
+rownames(train_y_df) <- Instances
+
+train_y_df_factor <- as.factor(train_y_df$Target)
+
+```
+
+Apply the filterVarImp function to determine the most important features.
+This gives us a vector of AUC scores for every variable.
+Calculate the sum of AUC scores and calculate the sum of squares of AUC scores.
+```{r}
+rocVarImp <- filterVarImp(train_x_df, train_y_df_factor)
+rocVarImp$Sum <- apply(rocVarImp, 1, sum)
+rocVarImp$SSQ <- apply(rocVarImp[1:3], 1, function(x){sum(x^2)})
+```
+
+## Plot feature importance
+Plot the distribution of AUC scores for all the features using the sum of AUCs.
+DNA region 17.2185 has the highest score.
+http://www.ensembl.org/Homo_sapiens/Location/Overview?r=17:35076296-35282086;db=core
+```{r}
+auc_scores_per_chromosome <- ggplot(data = rocVarImp, mapping = aes(1:2834, rocVarImp[,4], color = as.factor(train_data_array_input$Chromosome))) +
+  geom_point() +
+  labs(title = "Feature importance",
+       caption = "Sum of AUC scores",
+       x = "Feature number",
+       y = "Cumulative score")
+auc_scores_per_chromosome <- auc_scores_per_chromosome + guides(color=guide_legend(title = "Chromosome"))
+auc_scores_per_chromosome 
+```
+
+Plot a histogram of AUC scores of the features using the sum of AUCs..
+```{r}
+auc_scores_histogram <- ggplot(data = rocVarImp, mapping = aes(rocVarImp[,4], color = as.factor(train_data_array_input$Chromosome))) +
+  geom_histogram(bins = 30, fill = "white") +
+  labs(title = "Feature importance",
+       caption = "Sum of AUC scores",
+       x = "Cumulative score",
+       y = "Frequency")
+auc_scores_histogram <- auc_scores_histogram + guides(color=guide_legend(title = "Chromosome"))
+auc_scores_histogram 
+```
+
+Plot the distribution of AUC scores for all the features using the sum of squares of AUCs.
+DNA region 17.2185 has the highest score.
+http://www.ensembl.org/Homo_sapiens/Location/Overview?r=17:35076296-35282086;db=core
+```{r}
+auc_scores_per_chromosome <- ggplot(data = rocVarImp, mapping = aes(1:2834, rocVarImp[,5], color = as.factor(train_data_array_input$Chromosome))) +
+  geom_point() +
+  labs(title = "Feature importance",
+       caption = "Sum of square AUC scores",
+       x = "Feature number",
+       y = "Cumulative score")
+auc_scores_per_chromosome <- auc_scores_per_chromosome + guides(color=guide_legend(title = "Chromosome"))
+auc_scores_per_chromosome 
+```
+
+Plot a histogram of AUC scores of the features using the sum of squares of AUCs..
+```{r}
+auc_scores_histogram <- ggplot(data = rocVarImp, mapping = aes(rocVarImp[,5], color = as.factor(train_data_array_input$Chromosome))) +
+  geom_histogram(bins = 30, fill = "white") +
+  labs(title = "Feature importance",
+       caption = "Sum of square AUC scores",
+       x = "Cumulative score",
+       y = "Frequency")
+auc_scores_histogram <- auc_scores_histogram + guides(color=guide_legend(title = "Chromosome"))
+auc_scores_histogram 
+```
+
+
