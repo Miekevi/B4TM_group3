@@ -13,15 +13,18 @@ knit: (function(input_file, encoding) {
 ```{r}
 library("tidyverse")
 library("caret")
+library("superml")
+library("caret")
+library("rlist")
 ```
 
 # Load data
 Store all the data as tibble. 
 Make an additional tibble for the DNA region information. The ID is in the format <chromosome>.<#feature>
 ```{r}
-train_data_array_input <- as.tibble(read.table(file = "data/Train_call.txt", header = T, sep = "\t"))
+train_data_array_input <- as.tibble(read.table(file = "Train_call.txt", header = T, sep = "\t"))
 
-target_data_array <- read_tsv(file = "data/Train_clinical.txt")
+target_data_array <- read_tsv(file = "Train_clinical.txt")
 
 Instances <- colnames(train_data_array_input)[-c(1:4)]
 
@@ -53,28 +56,31 @@ train_data_array <- train_data_array %>% rename(Target = "target_data_array$Subg
 
 
 # Feature selection
-Split the data in a training set with features and a training set with targets (predictions).
+Split data in train and test data.
 Transform the training set to a data frame.
 Transform the targets to an object of class "factor".
+
+
 ```{r}
-train_x <- select(train_data_array, -Target)
-train_y <- select(train_data_array, -c(3:dim(train_data_array)[2]))
+train_data_array_df <- as.data.frame(select(train_data_array, -c(Instances)))
+rownames(train_data_array_df) <- Instances
+train_data_array_df$Target <- as.factor(train_data_array_df$Target)
 
-train_x_df <- as.data.frame(select(train_data_array, -c(Instances, Target)))
-rownames(train_x_df) <- Instances
+validation_index <- createDataPartition(train_data_array_df$Target, p=0.80, list = F)
+test_x_df <- train_data_array_df[-validation_index,] %>% select(-Target)
+test_y_df <- train_data_array_df[-validation_index,] %>% select(Target)
+test_data_array_df <- train_data_array_df[-validation_index,]
 
-train_y_df <- as.data.frame(select(train_data_array, -c(3:dim(train_data_array)[2], Instances)))
-rownames(train_y_df) <- Instances
-
-train_y_df_factor <- as.factor(train_y_df$Target)
-
+train_x_df <- train_data_array_df[validation_index,] %>% select(-Target)
+train_y_df <- train_data_array_df[validation_index,] %>% select(Target)
+train_data_array_df <- train_data_array_df[validation_index,]
 ```
 
 Apply the filterVarImp function to determine the most important features.
 This gives us a vector of AUC scores for every variable.
 Calculate the sum of AUC scores and calculate the sum of squares of AUC scores.
 ```{r}
-rocVarImp <- filterVarImp(train_x_df, train_y_df_factor)
+rocVarImp <- filterVarImp(train_x_df, train_y_df$Target)
 rocVarImp$Sum <- apply(rocVarImp, 1, sum)
 rocVarImp$SSQ <- apply(rocVarImp[1:3], 1, function(x){sum(x^2)})
 ```
@@ -132,8 +138,7 @@ auc_scores_histogram <- auc_scores_histogram + guides(color=guide_legend(title =
 auc_scores_histogram 
 ```
 
-
-# Cross validation and model training
+# Inner loop cross validation and model training
 Convert the rocVarImp data frame to a decreasing feature order.
 ```{r}
 rocVarImp_descending_sum <- rocVarImp[order(rocVarImp$Sum, decreasing = T),]
@@ -147,20 +152,20 @@ Train a kNN with different training set sizes.
 First, define a set of parameters: the seed, number of top features to test, the feature column names plus the target column name to extract, a list that stores the knn models, the cross-validation scheme, the metric for model comparison, the grid search parameters, and the grid search scheme.
 Then, determine for every set of features {1, ..., 10} the best model by grid search.
 ```{r}
-set.seed(100)
+set.seed(101)
 n_features <- 20
 tmp_feature_columns <- c(seq(1,n_features), "Target")
 kNN_models <- vector(mode = "list", length = n_features)
 control <- trainControl(method = "cv", number = 5)
 metric <- "Accuracy"
-k_grid_search <- seq(3,20)
+k_grid_search <- seq(1,20)
 grid_knn <- expand.grid(k=k_grid_search)
 
 
 for(i in 1:n_features){
   tmp_feature_columns[i] <- rownames(rocVarImp_descending_ssq)[i]
   fit.knn <- train(Target~., 
-                   data=train_data_array[,tmp_feature_columns[c(1:i,length(tmp_feature_columns))]], 
+                   data=train_data_array_df[,tmp_feature_columns[c(1:i,length(tmp_feature_columns))]], 
                    method="knn", metric=metric, 
                    trControl=control, 
                    tuneGrid = grid_knn)
@@ -203,3 +208,21 @@ ggplot(data = performance_knn,
              size = 4)
 
 ```
+
+Isolate the best performing kNN model
+To do this, determine first the best number of features.
+```{r}
+best_knn_n_features <- best_knn_models[order(best_knn_models$Accuracy, decreasing = T),]$n_features[1]
+fit.knn <- kNN_models[[best_knn_n_features]]
+fit.knn
+```
+
+
+# Outer loop cross validation
+## kNN model
+```{r}
+predictions_knn <- predict(fit.knn, test_data_array_df)
+confusionMatrix(predictions_knn, test_data_array_df$Target)
+```
+
+
