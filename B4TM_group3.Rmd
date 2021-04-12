@@ -225,4 +225,83 @@ predictions_knn <- predict(fit.knn, test_data_array_df)
 confusionMatrix(predictions_knn, test_data_array_df$Target)
 ```
 
+# Double-loop cross-validation
+```{r}
+# Determine the number of outer cross validation loops
+cv_outer <- 5
 
+# Initiate a list for the outer loop models.
+kNN_models_outer <- vector(mode = "list", length = cv_outer)
+
+# Initialize the start and end test set indices.
+test_index_start <- seq(1, dim(train_data_array)[1], dim(train_data_array)[1]/cv_outer)
+test_index_end <- seq(dim(train_data_array)[1]/cv_outer, dim(train_data_array)[1], dim(train_data_array)[1]/cv_outer)
+
+# Outer cross-validation
+for(i in 1:cv_outer){
+# Define the test and training set in iteration i.
+train_data_array_df <- as.data.frame(select(train_data_array, -c(Instances)))
+rownames(train_data_array_df) <- Instances
+train_data_array_df$Target <- as.factor(train_data_array_df$Target)
+
+test_index <- seq(test_index_start[i], test_index_end[i], 1)
+
+test_x_df <- train_data_array_df[-test_index,] %>% select(-Target)
+test_y_df <- train_data_array_df[-test_index,] %>% select(Target)
+test_data_array_df <- train_data_array_df[-test_index,]
+
+train_x_df <- train_data_array_df[test_index,] %>% select(-Target)
+train_y_df <- train_data_array_df[test_index,] %>% select(Target)
+train_data_array_df <- train_data_array_df[test_index,]
+
+# Rank the features on importance based on the filterVarImp function.
+rocVarImp <- filterVarImp(train_x_df, train_y_df$Target)
+rocVarImp$SSQ <- apply(rocVarImp[1:3], 1, function(x){sum(x^2)})
+
+rocVarImp_descending_ssq <- rocVarImp[order(rocVarImp$SSQ, decreasing = T),]
+
+# Define the model parameters.
+set.seed(101)
+n_features <- 20
+tmp_feature_columns <- c(seq(1,n_features), "Target")
+kNN_models <- vector(mode = "list", length = n_features)
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+metric <- "Accuracy"
+k_grid_search <- seq(3,20)
+grid_knn <- expand.grid(k=k_grid_search)
+
+# Inner cross validation to determine the hyperparameters.
+for(j in 1:n_features){
+  tmp_feature_columns[j] <- rownames(rocVarImp_descending_ssq)[j]
+  fit.knn <- train(Target~., 
+                   data=train_data_array_df[,tmp_feature_columns[c(1:j,length(tmp_feature_columns))]], 
+                   method="knn", 
+                   metric=metric, 
+                   trControl=control, 
+                   tuneGrid = grid_knn)
+  kNN_models[[j]] <- fit.knn
+}
+
+# Create a table with the best performing models for hyperparameter k and n features.
+kNN_models[[1]]$results$n_features <- 1
+performance_knn <- kNN_models[[1]]$results
+
+best_knn_models <- kNN_models[[1]]$results[order(kNN_models[[1]]$results$Accuracy, decreasing = T),][1,]
+
+for(j in 2:n_features){
+  kNN_models[[j]]$results$n_features <- j
+  performance_knn <- rbind(performance_knn, kNN_models[[j]]$results)
+  tmp_best_model <- kNN_models[[j]]$results[order(kNN_models[[j]]$results$Accuracy, 
+                                                  decreasing = T),][1,]
+  best_knn_models <- rbind(best_knn_models, tmp_best_model)
+}
+best_knn_models <- best_knn_models[order(best_knn_models$Accuracy, decreasing = T),]
+fit.knn <- kNN_models[[best_knn_models$n_features[1]]]
+
+kNN_models_outer[[i]] <- fit.knn
+
+}
+
+
+
+```
