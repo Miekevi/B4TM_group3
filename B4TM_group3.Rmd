@@ -133,3 +133,73 @@ auc_scores_histogram
 ```
 
 
+# Cross validation and model training
+Convert the rocVarImp data frame to a decreasing feature order.
+```{r}
+rocVarImp_descending_sum <- rocVarImp[order(rocVarImp$Sum, decreasing = T),]
+rocVarImp_descending_ssq <- rocVarImp[order(rocVarImp$SSQ, decreasing = T),]
+```
+
+
+## kNN model
+train_data_array[,c(rownames(rocVarImp_descending_ssq)[1])]
+Train a kNN with different training set sizes.
+First, define a set of parameters: the seed, number of top features to test, the feature column names plus the target column name to extract, a list that stores the knn models, the cross-validation scheme, the metric for model comparison, the grid search parameters, and the grid search scheme.
+Then, determine for every set of features {1, ..., 10} the best model by grid search.
+```{r}
+set.seed(100)
+n_features <- 20
+tmp_feature_columns <- c(seq(1,n_features), "Target")
+kNN_models <- vector(mode = "list", length = n_features)
+control <- trainControl(method = "cv", number = 5)
+metric <- "Accuracy"
+k_grid_search <- seq(3,20)
+grid_knn <- expand.grid(k=k_grid_search)
+
+
+for(i in 1:n_features){
+  tmp_feature_columns[i] <- rownames(rocVarImp_descending_ssq)[i]
+  fit.knn <- train(Target~., 
+                   data=train_data_array[,tmp_feature_columns[c(1:i,length(tmp_feature_columns))]], 
+                   method="knn", metric=metric, 
+                   trControl=control, 
+                   tuneGrid = grid_knn)
+  kNN_models[[i]] <- fit.knn
+}
+```
+
+
+Format the knn_models output
+Add an additional column to describe the number of features used in the model.
+Make a table with the performances of all the models.
+Make a table with the best scoring models.
+Expand these tables using a loop and rbind. For the table with all the models, just add the rows to the table. For the best models, order the knn_model results by decreasing accuracy. Then take the first row and add this row to the table.
+Plot the performances by ggplot and highlight the best performing models.
+```{r, fig.width=10, fig.height=6}
+kNN_models[[1]]$results$n_features <- 1
+performance_knn <- kNN_models[[1]]$results
+
+best_knn_models <- kNN_models[[1]]$results[order(kNN_models[[1]]$results$Accuracy, decreasing = T),][1,]
+
+for(i in 2:n_features){
+  kNN_models[[i]]$results$n_features <- i
+  performance_knn <- rbind(performance_knn, kNN_models[[i]]$results)
+  tmp_best_model <- kNN_models[[i]]$results[order(kNN_models[[i]]$results$Accuracy, 
+                                                  decreasing = T),][1,]
+  best_knn_models <- rbind(best_knn_models, tmp_best_model)
+}
+
+
+performance_knn$n_features <- as.factor(performance_knn$n_features)
+best_knn_models$n_features <- as.factor(best_knn_models$n_features)
+
+ggplot(data = performance_knn, 
+       mapping = aes(x = k, y = Accuracy, color = n_features)) +
+  geom_line(size = 1) +
+  scale_x_continuous(breaks = k_grid_search) +
+  theme_bw() +
+  geom_point(data = best_knn_models, 
+             mapping = aes(x = k, y = Accuracy, color = n_features), 
+             size = 4)
+
+```
