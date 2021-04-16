@@ -14,8 +14,7 @@ knit: (function(input_file, encoding) {
 library("tidyverse")
 library("caret")
 library("kernlab")
-library("caret")
-library("rlist")
+library("glmnet")
 ```
 
 # Load data
@@ -231,7 +230,7 @@ confusionMatrix(predictions_knn, test_data_array_df$Target)
 repeats_double_loop_cv <-  20
 kNN_models_outer_repeats <- vector(mode = "list", length = repeats_double_loop_cv)
 
-for(n in 0:(repeats_double_loop_cv - 1)){
+for(n in 0:(repeats_double_loop_cv - 1)){                  
 
 # Determine the number of outer cross validation loops
 cv_outer <- 5
@@ -572,3 +571,219 @@ ggplot(data = svm_poly_model_evaluation$svm_poly_evaluation) +
 
 
 
+## Logistic regression with elastic net regularization
+```{r}
+repeats_double_loop_cv <-  20
+lr_models_outer_repeats <- vector(mode = "list", length = repeats_double_loop_cv)
+
+for(n in 0:(repeats_double_loop_cv - 1)){
+
+# Determine the number of outer cross validation loops
+cv_outer <- 5
+
+# Initiate a list for the outer loop models.
+lr_models_outer <- vector(mode = "list", length = cv_outer)
+
+# Initialize the start and end test set indices.
+test_index_start <- seq(1, dim(train_data_array)[1],)
+test_index_end <- seq(dim(train_data_array)[1]/cv_outer, dim(train_data_array)[1] * 2)
+test_index_list <- c(seq(1, dim(train_data_array)[1]), seq(1, dim(train_data_array)[1]))
+
+# Outer cross-validation
+for(i in seq(1, dim(train_data_array)[1], 20)){
+# Define the test and training set in iteration i.
+train_data_array_df <- as.data.frame(select(train_data_array, -c(Instances)))
+rownames(train_data_array_df) <- Instances
+train_data_array_df$Target <- as.factor(train_data_array_df$Target)
+
+test_index <- test_index_list[test_index_start[i + n]:test_index_end[i + n]]
+
+test_x_df <- train_data_array_df[test_index,] %>% select(-Target)
+test_y_df <- train_data_array_df[test_index,] %>% select(Target)
+test_data_array_df <- train_data_array_df[test_index,]
+
+train_x_df <- train_data_array_df[-test_index,] %>% select(-Target)
+train_y_df <- train_data_array_df[-test_index,] %>% select(Target)
+train_data_array_df <- train_data_array_df[-test_index,]
+
+# Define the model parameters. In general k is sqrt(n) where n is the number of data points. Meaning that 10 would be a reference.
+set.seed(101)
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+metric <- "Accuracy"
+lr_alpha <- c(0.001, 0.01, 0.1, 1)
+lr_lambda <- c(0, 0.001, 0.1, 1, 5, 10)
+grid_lr_poly <- expand.grid(alpha = lr_alpha, lambda = lr_lambda)
+
+# Inner cross validation to determine the hyperparameters.
+fit.lr <- train(Target~.,
+                      data=train_data_array_df,
+                      method="glmnet",
+                      metric=metric,
+                      trControl=control,
+                      tuneGrid = grid_lr_poly)
+
+# Create a table with the best performing models for hyperparameter k and n features.
+fit.lr$results <- fit.lr$results[order(fit.lr$results$Accuracy, decreasing = T),]
+
+# Determine the best hyperparameters.
+best_alpha <- fit.lr$results$alpha[1]
+best_lambda <- fit.lr$results$lambda[1]
+
+# Make a final model with the best hyperparameters.
+grid_lr_poly <- expand.grid(alpha = best_alpha, lambda = best_lambda)
+
+fit.lr <- train(Target~.,
+                      data=train_data_array_df,
+                      method="glmnet",
+                      metric=metric,
+                      trControl=control,
+                      tuneGrid = grid_lr_poly)
+
+# Add the models of the outer loop to a list. i is in the format: 1, 21, 41, 61, 81. Change i to 1, 2, 3, 4, 5. Add also the prediction of the test set to a list.
+lr_models_outer[[floor(i / 10) / 2 + 1]] <- fit.lr
+lr_models_outer[[floor(i / 10) / 2 + 1]]$prediction <- confusionMatrix(predict(fit.lr, test_data_array_df), test_data_array_df$Target)
+
+
+}
+# Add the models of the n repeats to a list. n is in the format 0, 1, ..., 4. Change to 1, 2, ..., 5
+lr_models_outer_repeats[[n + 1]] <- lr_models_outer
+}
+
+```
+
+
+```{r}
+lr_model_evaluation <- list(lr_evaluation = data.frame(Alpha = rep(0, cv_outer * repeats_double_loop_cv),
+                                   Lambda = rep(0, cv_outer * repeats_double_loop_cv),                             
+                                   Accuracy_train = rep(0, cv_outer * repeats_double_loop_cv),
+                                   Accuracy_test = rep(0, cv_outer * repeats_double_loop_cv)), 
+                             lr_mean_accuracy_train = 0,
+                             lr_mean_accuracy_test = 0,
+                             lr_mean_alpha = 0,
+                             lr_mean_lambda = 0)
+
+count <- 1
+for(i in 1:repeats_double_loop_cv){
+  for(j in 1:cv_outer){
+    lr_model_evaluation$lr_evaluation[count,1] <- lr_models_outer_repeats[[i]][[j]]$results$alpha
+    lr_model_evaluation$lr_evaluation[count,2] <- lr_models_outer_repeats[[i]][[j]]$results$lambda
+    lr_model_evaluation$lr_evaluation[count,3] <- lr_models_outer_repeats[[i]][[j]]$results$Accuracy
+    lr_model_evaluation$lr_evaluation[count,4] <- lr_models_outer_repeats[[i]][[j]]$prediction$overall[[1]]
+    
+    count <- count + 1
+}}
+
+lr_model_evaluation$lr_mean_accuracy_train <- mean(lr_model_evaluation$lr_evaluation$Accuracy_train)
+lr_model_evaluation$lr_mean_accuracy_test <- mean(lr_model_evaluation$lr_evaluation$Accuracy_test)
+lr_model_evaluation$lr_mean_alpha <- mean(lr_model_evaluation$lr_evaluation$Alpha)
+lr_model_evaluation$lr_mean_lambda <- mean(lr_model_evaluation$lr_evaluation$Lambda)
+
+lr_model_evaluation
+```
+
+
+```{r}
+train_data_array_df <- as.data.frame(select(train_data_array, -c(Instances)))
+rownames(train_data_array_df) <- Instances
+train_data_array_df$Target <- as.factor(train_data_array_df$Target)
+
+grid_lr_poly <- expand.grid(alpha = lr_model_evaluation$lr_mean_alpha, lambda = lr_model_evaluation$lr_mean_lambda)
+final.lr <- train(Target~.,
+                      data=train_data_array_df,
+                      method="glmnet",
+                      metric=metric,
+                      trControl=control,
+                      tuneGrid = grid_lr_poly)
+```
+
+
+## Baseline model
+```{r}
+target_table <- target_data_array %>% group_by(Subgroup) %>%
+  tally()
+target_table$ratio <- target_table$n/dim(target_data_array)[1]
+
+baseline_sampling_repeats <- 100
+baseline_accuracy_vector <- rep(0, baseline_sampling_repeats)
+
+for(i in 1:baseline_sampling_repeats){
+baseline_prediction <- sample(target_table$Subgroup, 
+                              prob = c(target_table$ratio[1], 
+                                       target_table$ratio[2], 
+                                       target_table$ratio[3]),
+                              size = 100,
+                              replace = T)
+baseline_accuracy_vector[i] <- sum(target_data_array$Subgroup == baseline_prediction) / dim(target_data_array)[1]
+}
+
+baseline_accuracy <- mean(baseline_accuracy_vector)
+```
+
+
+# Feature importance
+```{r}
+print("SVM feature weights")
+svm_coef <- final.svm_poly$finalModel@coef[[1]] %*% final.svm_poly$finalModel@xmatrix[[1]]
+svm_coef <- data.frame(t(svm_coef))
+colnames(svm_coef) <- "Coefficients"
+svm_coef$DNA_regions <- c("17.2185", "12.1673", "5.695", "12.1672", "12.1679")
+
+print("Logistic regression weights")
+
+
+lr_coef <- coef(final.lr$finalModel, final.lr$finalModel$lambdaOpt)
+lr_coef_her2 <- lr_coef$`HER2+`[order(abs(lr_coef$`HER2+`), decreasing = T),]
+lr_coef_hr_plus <- lr_coef$`HR+`[order(abs(lr_coef$`HR+`), decreasing = T),]
+lr_coef_tirple_neg <- lr_coef$`Triple Neg`[order(abs(lr_coef$`Triple Neg`), decreasing = T),]
+
+print("her2")
+lr_coef_her2[1:3]
+print("hr+")
+lr_coef_hr_plus[1:26]
+print("Triple negative")
+lr_coef_tirple_neg[1:18]
+```
+
+
+# Plots
+## Accuracy
+```{r, fig.dim=c(10,20)}
+Model_accuracies <- data.frame(kNN.train = knn_model_evaluation$knn_evaluation$Accuracy_train,
+                               kNN.test = knn_model_evaluation$knn_evaluation$Accuracy_test,
+                               SVM.train = svm_poly_model_evaluation$svm_poly_evaluation$Accuracy_train,
+                               SVM.test = svm_poly_model_evaluation$svm_poly_evaluation$Accuracy_test,
+                               Linear_regression.train = lr_model_evaluation$lr_evaluation$Accuracy_train,
+                               Linear_regression.test = lr_model_evaluation$lr_evaluation$Accuracy_test)
+
+Model_accuracies <- Model_accuracies %>% gather(key = Assessment_method, value = Accuracy)
+
+
+ggplot(data = Model_accuracies) +
+  geom_boxplot(mapping = aes(x = Assessment_method, y = Accuracy), outlier.shape=NA) +
+  geom_jitter(data = Model_accuracies[c(seq(101,200), seq(301, 400), seq(501,600)),], mapping = aes(x = Assessment_method, y = Accuracy), width = 0.2, color = "Blue") +
+  geom_jitter(data = Model_accuracies[c(seq(1,100), seq(201, 300), seq(401,500)),], mapping = aes(x = Assessment_method, y = Accuracy), width = 0.2, color = "Green") +
+  ylim(0:1) +
+  geom_line(mapping = aes(x = Assessment_method, y = baseline_accuracy, group = 1), color = "Red") +
+  ggtitle("Accuracy For Different Models") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, margin = margin(t= 30), colour = "Black"))
+```
+
+
+```{r}
+par(mfrow = c(1,2))
+ggplot(data = svm_coef) +
+  geom_bar(mapping = aes(x = as.factor(DNA_regions), y = Coefficients), stat = "identity", fill = "Blue") +
+  xlab("DNA region") +
+  ylab("Coefficient") +
+  theme_bw() +
+  ggtitle("SVM")
+
+ggplot(data = svm_coef) +
+  geom_bar(mapping = aes(x = as.factor(DNA_regions), y = Coefficients), stat = "identity", fill = "Blue") +
+  xlab("DNA region") +
+  ylab("Coefficient") +
+  theme_bw() +
+  ggtitle("SVM")
+
+```
