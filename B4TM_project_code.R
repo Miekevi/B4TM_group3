@@ -1,0 +1,562 @@
+# Title: B4TM project
+# Authors: "Timo Dijkstra, Tessa Duk, Mickey van Immerseel, Robin Pocornie"
+# Date: 2-4-2021
+
+# ======== Load Packages ===========
+library("tidyverse")
+library("caret")
+library("kernlab")
+library("glmnet")
+
+# ======== Load data and metdata ===========
+# Store all the data as tibble. 
+# Make an additional tibble for the DNA region information. 
+# The ID is in the format <chromosome>.<#feature>
+train_data_array_input <- as.tibble(read.table(file = "Train_call.txt", header = T, sep = "\t"))
+
+target_data_array <- read_tsv(file = "Train_clinical.txt")
+
+Instances <- colnames(train_data_array_input)[-c(1:4)]
+
+feature_information <- as_tibble(t(train_data_array_input[,1:4]))
+names(feature_information) <- paste(train_data_array_input$Chromosome, ".", as.character(1:dim(train_data_array_input)[1]), sep = "")
+
+DNA_region_information <- c("Chromosome", "Start", "End", "Nclone")
+rownames(feature_information) <- DNA_region_information
+
+# ======== Data preprocessing ===========
+# Transpose the train data matrix.
+# Remove the DNA region information.
+# Make the DNA_IDs the new feature names.
+train_data_array <- as_tibble(t(subset(train_data_array_input, select = -c(Chromosome:Nclone))))
+names(train_data_array) <- colnames(feature_information)
+train_data_array <-  train_data_array %>% add_column(Instances, .before = "1.1")
+
+# Add the targets to the train_data_arry. 
+# For convenience, place the targets in front of the train data set.
+train_data_array <- train_data_array %>% add_column(target_data_array$Subgroup, .before = "1.1")
+train_data_array <- train_data_array %>% rename(Target = "target_data_array$Subgroup")
+
+# ======== Double-loop cross-validation ===========
+# ======== kNN dl cv ===========
+repeats_double_loop_cv <-  20         # Repeats of double loop cross validation.
+# Initiate a list for all the 100 models.
+kNN_models_outer_repeats <- vector(mode = "list", length = repeats_double_loop_cv)
+
+# Repeats.
+for(n in 0:(repeats_double_loop_cv - 1)){                  
+  
+  # Determine the number of outer cross validation loops.
+  cv_outer <- 5
+  
+  # Initiate a list for the outer loop models.
+  kNN_models_outer <- vector(mode = "list", length = cv_outer)
+  
+  # Initialize the start and end test set indices.
+  test_index_start <- seq(1, dim(train_data_array)[1],)
+  test_index_end <- seq(dim(train_data_array)[1]/cv_outer, dim(train_data_array)[1] * 2)
+  test_index_list <- c(seq(1, dim(train_data_array)[1]), seq(1, dim(train_data_array)[1]))
+  
+  # Outer cross-validation.
+  for(i in seq(1, dim(train_data_array)[1], 20)){
+    # Define the test and training set in iteration i.
+    # Transform tibble to training data and append target column.
+    train_data_array_df <- as.data.frame(select(train_data_array, -c(Instances)))
+    rownames(train_data_array_df) <- Instances
+    train_data_array_df$Target <- as.factor(train_data_array_df$Target)
+    
+    # Create a vector with test set indices.
+    test_index <- test_index_list[test_index_start[i + n]:test_index_end[i + n]]
+    
+    # Create test sets.
+    test_x_df <- train_data_array_df[test_index,] %>% select(-Target)
+    test_y_df <- train_data_array_df[test_index,] %>% select(Target)
+    test_data_array_df <- train_data_array_df[test_index,]
+    
+    # Create training sets.
+    train_x_df <- train_data_array_df[-test_index,] %>% select(-Target)
+    train_y_df <- train_data_array_df[-test_index,] %>% select(Target)
+    train_data_array_df <- train_data_array_df[-test_index,]
+    
+    # Determine which features are most important.
+    # Rank the features on importance based on the filterVarImp function.
+    rocVarImp <- filterVarImp(train_x_df, train_y_df$Target)
+    rocVarImp$SSQ <- apply(rocVarImp[1:3], 1, function(x){sum(x^2)})
+    
+    rocVarImp_descending_ssq <- rocVarImp[order(rocVarImp$SSQ, decreasing = T),]
+    
+    # Define the model parameters. In general k is sqrt(n) where n is the number of data points. Meaning that 10 would be a reference.
+    # Define a seed. 
+    # Initialize a training scheme and a grid search scheme.
+    # Make a vector for all the inner loop models.
+    # Every iteration, add one feature based on the filterVarImp function.
+    set.seed(101)
+    n_features <- 12
+    tmp_feature_columns <- c(seq(1,n_features), "Target")
+    kNN_models <- vector(mode = "list", length = n_features)
+    control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+    metric <- "Accuracy"
+    k_grid_search <- seq(5,15)
+    grid_knn <- expand.grid(k=k_grid_search)
+    
+    # Inner cross validation to determine the hyperparameters.
+    for(j in 1:n_features){
+      tmp_feature_columns[j] <- rownames(rocVarImp_descending_ssq)[j]
+      fit.knn <- train(Target~., 
+                       data=train_data_array_df[,tmp_feature_columns[c(1:j,length(tmp_feature_columns))]], 
+                       method="knn", 
+                       metric=metric, 
+                       trControl=control, 
+                       tuneGrid = grid_knn)
+      # Add the model to the inner loop list.
+      kNN_models[[j]] <- fit.knn
+    }
+    
+    # Create a table with the best performing models for hyperparameter k and n features.
+    # Rank this table and extract the best kNN model of the inner loop.
+    kNN_models[[1]]$results$n_features <- 1
+    performance_knn <- kNN_models[[1]]$results
+    best_knn_models <- kNN_models[[1]]$results[order(kNN_models[[1]]$results$Accuracy, decreasing = T),][1,]
+    
+    # Expand the table for all the models in the list.
+    for(j in 2:n_features){
+      kNN_models[[j]]$results$n_features <- j
+      performance_knn <- rbind(performance_knn, kNN_models[[j]]$results)
+      tmp_best_model <- kNN_models[[j]]$results[order(kNN_models[[j]]$results$Accuracy, 
+                                                      decreasing = T),][1,]
+      best_knn_models <- rbind(best_knn_models, tmp_best_model)
+    }
+    # Order the table from best to worst performing based on accuracy.
+    best_knn_models <- best_knn_models[order(best_knn_models$Accuracy, decreasing = T),]
+    
+    # Determine the best hyperparameters.
+    best_n_featues <- best_knn_models$n_features[1]
+    best_k <- best_knn_models$k[1]
+    
+    # Make a final model with the best hyperparameters.
+    # This model is independent of the inner loop.
+    grid_knn <- expand.grid(k=best_k)
+    
+    fit.knn <- train(Target~., 
+                     data=train_data_array_df[,tmp_feature_columns[c(1:best_n_featues,length(tmp_feature_columns))]],
+                     method="knn", 
+                     metric=metric, 
+                     trControl=control, 
+                     tuneGrid = grid_knn)
+    
+    # Add the models of the outer loop to a list. i is in the format: 1, 21, 41, 61, 81. Change i to 1, 2, 3, 4, 5. Add also the prediction of the test set to a list.
+    kNN_models_outer[[floor(i / 10) / 2 + 1]] <- fit.knn
+    kNN_models_outer[[floor(i / 10) / 2 + 1]]$results$n_features <- best_n_featues
+    kNN_models_outer[[floor(i / 10) / 2 + 1]]$prediction <- confusionMatrix(predict(fit.knn, test_data_array_df), test_data_array_df$Target)
+    
+    
+  }
+  # Add the models of the n repeats to a list. n is in the format 0, 1, ..., 4. Change to 1, 2, ..., 5.
+  kNN_models_outer_repeats[[n + 1]] <- kNN_models_outer
+}
+
+# ======== kNN evaluation ===========
+# Evaluate the 100 kNN models
+# Initialize a list for model statistics.
+knn_model_evaluation <- list(knn_evaluation = data.frame(k = rep(0, cv_outer * repeats_double_loop_cv),
+                                                         n_features = rep(0, cv_outer * repeats_double_loop_cv),
+                                                         Accuracy_train = rep(0, cv_outer * repeats_double_loop_cv),
+                                                         Accuracy_test = rep(0, cv_outer * repeats_double_loop_cv)), 
+                             knn_mean_accuracy_train = 0,
+                             knn_mean_accuracy_test = 0,
+                             knn_mean_k = 0,
+                             knn_mean_n_features = 0)
+# Fill in the data frame.
+count <- 1
+for(i in 1:repeats_double_loop_cv){
+  for(j in 1:cv_outer){
+    knn_model_evaluation$knn_evaluation[count,1] <- kNN_models_outer_repeats[[i]][[j]]$results$k
+    knn_model_evaluation$knn_evaluation[count,2] <- kNN_models_outer_repeats[[i]][[j]]$results$n_features
+    knn_model_evaluation$knn_evaluation[count,3] <- kNN_models_outer_repeats[[i]][[j]]$results$Accuracy
+    knn_model_evaluation$knn_evaluation[count,4] <- kNN_models_outer_repeats[[i]][[j]]$prediction$overall[[1]]
+    
+    count <- count + 1
+  }}
+
+# Determine the averages. 
+knn_model_evaluation$knn_mean_accuracy_train <- mean(knn_model_evaluation$knn_evaluation$Accuracy_train)
+knn_model_evaluation$knn_mean_accuracy_test <- mean(knn_model_evaluation$knn_evaluation$Accuracy_test)
+knn_model_evaluation$knn_mean_k <- mean(knn_model_evaluation$knn_evaluation$k)
+knn_model_evaluation$knn_mean_n_features <- mean(knn_model_evaluation$knn_evaluation$n_features)
+knn_model_evaluation$knn_evaluation$k <- as.factor(knn_model_evaluation$knn_evaluation$k)
+
+knn_model_evaluation
+
+# ======== kNN final model ===========
+# Make a final model based on the kNN evaluation. Use all the training data.
+train_data_array_df <- as.data.frame(select(train_data_array, -c(Instances)))
+rownames(train_data_array_df) <- Instances
+train_data_array_df$Target <- as.factor(train_data_array_df$Target)
+
+grid_knn <- expand.grid(k=round(knn_model_evaluation$knn_mean_k))
+final.knn <- train(Target~., 
+                   data=train_data_array_df[,tmp_feature_columns[c(1:round(knn_model_evaluation$knn_mean_n_features),length(tmp_feature_columns))]], 
+                   method="knn", 
+                   metric=metric, 
+                   trControl=control, 
+                   tuneGrid = grid_knn)
+# ======== SVM dl cv ===========
+repeats_double_loop_cv <-  20           # Repeats of double loop cross validation.
+# Initiate a list for all the 100 models.
+svm_poly_models_outer_repeats <- vector(mode = "list", length = repeats_double_loop_cv)
+# Repeats.
+for(n in 0:(repeats_double_loop_cv - 1)){
+  
+  # Determine the number of outer cross validation loops
+  cv_outer <- 5
+  
+  # Initiate a list for the outer loop models.
+  svm_poly_models_outer <- vector(mode = "list", length = cv_outer)
+  
+  # Initialize the start and end test set indices.
+  test_index_start <- seq(1, dim(train_data_array)[1],)
+  test_index_end <- seq(dim(train_data_array)[1]/cv_outer, dim(train_data_array)[1] * 2)
+  test_index_list <- c(seq(1, dim(train_data_array)[1]), seq(1, dim(train_data_array)[1]))
+  
+  # Outer cross-validation
+  for(i in seq(1, dim(train_data_array)[1], 20)){
+    # Define the test and training set in iteration i.
+    # Transform tibble to training data and append target column.
+    train_data_array_df <- as.data.frame(select(train_data_array, -c(Instances)))
+    rownames(train_data_array_df) <- Instances
+    train_data_array_df$Target <- as.factor(train_data_array_df$Target)
+    # Create a vector with test set indices.
+    test_index <- test_index_list[test_index_start[i + n]:test_index_end[i + n]]
+    # Create test sets.
+    test_x_df <- train_data_array_df[test_index,] %>% select(-Target)
+    test_y_df <- train_data_array_df[test_index,] %>% select(Target)
+    test_data_array_df <- train_data_array_df[test_index,]
+    # Create training sets.
+    train_x_df <- train_data_array_df[-test_index,] %>% select(-Target)
+    train_y_df <- train_data_array_df[-test_index,] %>% select(Target)
+    train_data_array_df <- train_data_array_df[-test_index,]
+    
+    # Determine which features are most important.
+    # Rank the features on importance based on the filterVarImp function.
+    rocVarImp <- filterVarImp(train_x_df, train_y_df$Target)
+    rocVarImp$SSQ <- apply(rocVarImp[1:3], 1, function(x){sum(x^2)})
+    
+    rocVarImp_descending_ssq <- rocVarImp[order(rocVarImp$SSQ, decreasing = T),]
+    
+    # Define the model parameters.
+    set.seed(101)
+    n_features <- 12
+    tmp_feature_columns <- c(seq(1,n_features), "Target")
+    svm_poly_models <- vector(mode = "list", length = n_features)
+    control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+    metric <- "Accuracy"
+    svm_poly_C <- c(0.001, 0.01, 0.05, 0.1,0.5, 1, 2)
+    svm_poly_sigma <- c(0.005, 0.01, 0.05, 0.1,0.5)
+    grid_svm_poly <- expand.grid(C = svm_poly_C, sigma = svm_poly_sigma)
+    
+    # Inner cross validation to determine the hyperparameters.
+    # Initialize a training scheme and a grid search scheme.
+    # Make a vector for all the inner loop models.
+    # Every iteration, add one feature based on the filterVarImp function.
+    for(j in 1:n_features){
+      tmp_feature_columns[j] <- rownames(rocVarImp_descending_ssq)[j]
+      fit.svm_poly <- train(Target~., 
+                            data=train_data_array_df[,tmp_feature_columns[c(1:j,length(tmp_feature_columns))]], 
+                            method="svmRadial", 
+                            metric=metric, 
+                            trControl=control, 
+                            tuneGrid = grid_svm_poly)
+      # Add the model to the inner loop list.
+      svm_poly_models[[j]] <- fit.svm_poly
+    }
+    
+    # Create a table with the best performing models for hyperparameter k and n features.
+    # Rank this table and extract the best kNN model of the inner loop.
+    svm_poly_models[[1]]$results$n_features <- 1
+    performance_svm_poly <- svm_poly_models[[1]]$results
+    best_svm_poly_models <- svm_poly_models[[1]]$results[order(svm_poly_models[[1]]$results$Accuracy, decreasing = T),][1,]
+    # Expand the table for all the models in the list.
+    for(j in 2:n_features){
+      svm_poly_models[[j]]$results$n_features <- j
+      performance_svm_poly <- rbind(performance_svm_poly, svm_poly_models[[j]]$results)
+      tmp_best_model <- svm_poly_models[[j]]$results[order(svm_poly_models[[j]]$results$Accuracy, 
+                                                           decreasing = T),][1,]
+      best_svm_poly_models <- rbind(best_svm_poly_models, tmp_best_model)
+    }
+    # Order the table from best to worst performing based on accuracy.
+    best_svm_poly_models <- best_svm_poly_models[order(best_svm_poly_models$Accuracy, decreasing = T),]
+    
+    # Determine the best hyperparameters.
+    best_C <- best_svm_poly_models$C[1]
+    best_sigma <- best_svm_poly_models$sigma[1]
+    best_n_featues <- best_svm_poly_models$n_features[1]
+    # Make a final model with the best hyperparameters.
+    # This model is independent of the inner loop.
+    grid_svm_poly <- expand.grid(C = best_C, sigma = best_sigma)
+    
+    fit.svm_poly <- train(Target~., 
+                          data=train_data_array_df[,tmp_feature_columns[c(1:best_n_featues,length(tmp_feature_columns))]], 
+                          method="svmRadial", 
+                          metric=metric, 
+                          trControl=control, 
+                          tuneGrid = grid_svm_poly)
+    
+    # Add the models of the outer loop to a list. i is in the format: 1, 21, 41, 61, 81. Change i to 1, 2, 3, 4, 5. Add also the prediction of the test set to a list.
+    svm_poly_models_outer[[floor(i / 10) / 2 + 1]] <- fit.svm_poly
+    svm_poly_models_outer[[floor(i / 10) / 2 + 1]]$results$n_features <- best_n_featues
+    svm_poly_models_outer[[floor(i / 10) / 2 + 1]]$prediction <- confusionMatrix(predict(fit.svm_poly, test_data_array_df), test_data_array_df$Target)
+    
+    
+  }
+  # Add the models of the n repeats to a list. n is in the format 0, 1, ..., 4. Change to 1, 2, ..., 5
+  svm_poly_models_outer_repeats[[n + 1]] <- svm_poly_models_outer
+}
+# ======== SVM evaluation ===========
+# Evaluate the 100 kNN models
+# Initialize a list for model statistics.
+svm_poly_model_evaluation <- list(svm_poly_evaluation = data.frame(C = rep(0, cv_outer * repeats_double_loop_cv),
+                                                                   Sigma = rep(0, cv_outer * repeats_double_loop_cv),                             
+                                                                   n_features = rep(0, cv_outer * repeats_double_loop_cv),
+                                                                   Accuracy_train = rep(0, cv_outer * repeats_double_loop_cv),
+                                                                   Accuracy_test = rep(0, cv_outer * repeats_double_loop_cv)), 
+                                  svm_poly_mean_accuracy_train = 0,
+                                  svm_poly_mean_accuracy_test = 0,
+                                  svm_poly_mean_C = 0,
+                                  svm_poly_mean_sigma = 0,
+                                  svm_poly_mean_n_features = 0)
+
+# Fill in the data frame.
+count <- 1
+for(i in 1:repeats_double_loop_cv){
+  for(j in 1:cv_outer){
+    svm_poly_model_evaluation$svm_poly_evaluation[count,1] <- svm_poly_models_outer_repeats[[i]][[j]]$results$C
+    svm_poly_model_evaluation$svm_poly_evaluation[count,2] <- svm_poly_models_outer_repeats[[i]][[j]]$results$sigma
+    svm_poly_model_evaluation$svm_poly_evaluation[count,3] <- svm_poly_models_outer_repeats[[i]][[j]]$results$n_features
+    svm_poly_model_evaluation$svm_poly_evaluation[count,4] <- svm_poly_models_outer_repeats[[i]][[j]]$results$Accuracy
+    svm_poly_model_evaluation$svm_poly_evaluation[count,5] <- svm_poly_models_outer_repeats[[i]][[j]]$prediction$overall[[1]]
+    
+    count <- count + 1
+  }}
+# Determine the averages.
+svm_poly_model_evaluation$svm_poly_mean_accuracy_train <- mean(svm_poly_model_evaluation$svm_poly_evaluation$Accuracy_train)
+svm_poly_model_evaluation$svm_poly_mean_accuracy_test <- mean(svm_poly_model_evaluation$svm_poly_evaluation$Accuracy_test)
+svm_poly_model_evaluation$svm_poly_mean_C <- mean(svm_poly_model_evaluation$svm_poly_evaluation$C)
+svm_poly_model_evaluation$svm_poly_mean_sigma <- mean(svm_poly_model_evaluation$svm_poly_evaluation$Sigma)
+svm_poly_model_evaluation$svm_mean_n_features <- mean(svm_poly_model_evaluation$svm_poly_evaluation$n_features)
+
+svm_poly_model_evaluation
+# ======== SVM final model ===========
+# Make a final model based on the SVM evaluation. Use all the training data.
+train_data_array_df <- as.data.frame(select(train_data_array, -c(Instances)))
+rownames(train_data_array_df) <- Instances
+train_data_array_df$Target <- as.factor(train_data_array_df$Target)
+
+grid_svm_poly <- expand.grid(C = svm_poly_model_evaluation$svm_poly_mean_C, sigma = svm_poly_model_evaluation$svm_poly_mean_sigma)
+final.svm_poly <- train(Target~., 
+                        data=train_data_array_df[,tmp_feature_columns[c(1:round(svm_poly_model_evaluation$svm_mean_n_features),length(tmp_feature_columns))]], 
+                        method="svmRadial", 
+                        metric=metric, 
+                        trControl=control, 
+                        tuneGrid = grid_svm_poly)
+# ======== Logistic regression dl cv ===========
+repeats_double_loop_cv <-  20             # Repeats of double loop cross validation.
+# Initiate a list for all the 100 models.
+lr_models_outer_repeats <- vector(mode = "list", length = repeats_double_loop_cv)
+# Repeats.
+for(n in 0:(repeats_double_loop_cv - 1)){
+  
+  # Determine the number of outer cross validation loops
+  cv_outer <- 5
+  
+  # Initiate a list for the outer loop models.
+  lr_models_outer <- vector(mode = "list", length = cv_outer)  
+  
+  # Initialize the start and end test set indices.
+  test_index_start <- seq(1, dim(train_data_array)[1],)
+  test_index_end <- seq(dim(train_data_array)[1]/cv_outer, dim(train_data_array)[1] * 2)
+  test_index_list <- c(seq(1, dim(train_data_array)[1]), seq(1, dim(train_data_array)[1]))
+  
+  # Outer cross-validation
+  for(i in seq(1, dim(train_data_array)[1], 20)){
+    # Define the test and training set in iteration i.
+    # Transform tibble to training data and append target column.
+    train_data_array_df <- as.data.frame(select(train_data_array, -c(Instances)))
+    rownames(train_data_array_df) <- Instances
+    train_data_array_df$Target <- as.factor(train_data_array_df$Target)
+    # Create a vector with test set indices.
+    test_index <- test_index_list[test_index_start[i + n]:test_index_end[i + n]]
+    # Create test sets.
+    test_x_df <- train_data_array_df[test_index,] %>% select(-Target)
+    test_y_df <- train_data_array_df[test_index,] %>% select(Target)
+    test_data_array_df <- train_data_array_df[test_index,]
+    # Create training sets.
+    train_x_df <- train_data_array_df[-test_index,] %>% select(-Target)
+    train_y_df <- train_data_array_df[-test_index,] %>% select(Target)
+    train_data_array_df <- train_data_array_df[-test_index,]
+    
+    # Define the model parameters.
+    # Define a seed. 
+    # Initialize a training scheme and a grid search scheme.
+    # Make a vector for all the inner loop models.
+    # Every iteration, add one feature based on the filterVarImp function.
+    set.seed(101)
+    control <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+    metric <- "Accuracy"
+    lr_alpha <- c(0.001, 0.01, 0.1, 1)
+    lr_lambda <- c(0, 0.001, 0.1, 1, 5, 10)
+    grid_lr_poly <- expand.grid(alpha = lr_alpha, lambda = lr_lambda)
+    
+    # Inner cross validation to determine the hyperparameters.
+    fit.lr <- train(Target~.,
+                    data=train_data_array_df,
+                    method="glmnet",
+                    metric=metric,
+                    trControl=control,
+                    tuneGrid = grid_lr_poly)
+    
+    # Create a table with the best performing models for hyperparameter k and n features.
+    fit.lr$results <- fit.lr$results[order(fit.lr$results$Accuracy, decreasing = T),]
+    
+    # Determine the best hyperparameters.
+    best_alpha <- fit.lr$results$alpha[1]
+    best_lambda <- fit.lr$results$lambda[1]
+    
+    # Make a final model with the best hyperparameters.
+    grid_lr_poly <- expand.grid(alpha = best_alpha, lambda = best_lambda)
+    
+    fit.lr <- train(Target~.,
+                    data=train_data_array_df,
+                    method="glmnet",
+                    metric=metric,
+                    trControl=control,
+                    tuneGrid = grid_lr_poly)
+    
+    # Add the models of the outer loop to a list. i is in the format: 1, 21, 41, 61, 81. Change i to 1, 2, 3, 4, 5. Add also the prediction of the test set to a list.
+    lr_models_outer[[floor(i / 10) / 2 + 1]] <- fit.lr
+    lr_models_outer[[floor(i / 10) / 2 + 1]]$prediction <- confusionMatrix(predict(fit.lr, test_data_array_df), test_data_array_df$Target)
+    
+    
+  }
+  # Add the models of the n repeats to a list. n is in the format 0, 1, ..., 4. Change to 1, 2, ..., 5
+  lr_models_outer_repeats[[n + 1]] <- lr_models_outer
+}
+# ======== Logistic regression evaluation ===========
+# Evaluate the 100 kNN models
+# Initialize a list for model statistics.
+lr_model_evaluation <- list(lr_evaluation = data.frame(Alpha = rep(0, cv_outer * repeats_double_loop_cv),
+                                                       Lambda = rep(0, cv_outer * repeats_double_loop_cv),                             
+                                                       Accuracy_train = rep(0, cv_outer * repeats_double_loop_cv),
+                                                       Accuracy_test = rep(0, cv_outer * repeats_double_loop_cv)), 
+                            lr_mean_accuracy_train = 0,
+                            lr_mean_accuracy_test = 0,
+                            lr_mean_alpha = 0,
+                            lr_mean_lambda = 0)
+# Fill in the data frame.
+count <- 1
+for(i in 1:repeats_double_loop_cv){
+  for(j in 1:cv_outer){
+    lr_model_evaluation$lr_evaluation[count,1] <- lr_models_outer_repeats[[i]][[j]]$results$alpha
+    lr_model_evaluation$lr_evaluation[count,2] <- lr_models_outer_repeats[[i]][[j]]$results$lambda
+    lr_model_evaluation$lr_evaluation[count,3] <- lr_models_outer_repeats[[i]][[j]]$results$Accuracy
+    lr_model_evaluation$lr_evaluation[count,4] <- lr_models_outer_repeats[[i]][[j]]$prediction$overall[[1]]
+    
+    count <- count + 1
+  }}
+# Determine the averages.
+lr_model_evaluation$lr_mean_accuracy_train <- mean(lr_model_evaluation$lr_evaluation$Accuracy_train)
+lr_model_evaluation$lr_mean_accuracy_test <- mean(lr_model_evaluation$lr_evaluation$Accuracy_test)
+lr_model_evaluation$lr_mean_alpha <- mean(lr_model_evaluation$lr_evaluation$Alpha)
+lr_model_evaluation$lr_mean_lambda <- mean(lr_model_evaluation$lr_evaluation$Lambda)
+
+lr_model_evaluation
+# ======== Logistic regression final model ===========
+# Make a final model based on the LR evaluation. Use all the training data.
+train_data_array_df <- as.data.frame(select(train_data_array, -c(Instances)))
+rownames(train_data_array_df) <- Instances
+train_data_array_df$Target <- as.factor(train_data_array_df$Target)
+
+grid_lr_poly <- expand.grid(alpha = lr_model_evaluation$lr_mean_alpha, lambda = lr_model_evaluation$lr_mean_lambda)
+final.lr <- train(Target~.,
+                  data=train_data_array_df,
+                  method="glmnet",
+                  metric=metric,
+                  trControl=control,
+                  tuneGrid = grid_lr_poly)
+
+# ======== Baseline model ===========
+# Count the occurrences of every class.
+target_table <- target_data_array %>% group_by(Subgroup) %>%
+  tally()
+# Calculate the ratios of the classes.
+target_table$ratio <- target_table$n/dim(target_data_array)[1]
+
+# Sample the classes 100 times using the ratios.
+baseline_sampling_repeats <- 100
+baseline_accuracy_vector <- rep(0, baseline_sampling_repeats)
+
+for(i in 1:baseline_sampling_repeats){
+  baseline_prediction <- sample(target_table$Subgroup, 
+                                prob = c(target_table$ratio[1], 
+                                         target_table$ratio[2], 
+                                         target_table$ratio[3]),
+                                size = 100,
+                                replace = T)
+  # Determine the fraction that is well predicted.
+  baseline_accuracy_vector[i] <- sum(target_data_array$Subgroup == baseline_prediction) / dim(target_data_array)[1]
+}
+
+# Calculate the mean baseline accuracy.
+baseline_accuracy <- mean(baseline_accuracy_vector)
+
+# ======== Biomarker determination ===========
+# For kNN we can just extract the top n features determined by the filtervarimp function.
+# n determines the number of features. We did not explicetely code this. It can be found by rocVarImp_descending_ssq.
+
+# SVM extracts the top n features and also gives weights to the features.
+# Therefore, we extract the weights.
+print("SVM feature weights")
+svm_coef <- final.svm_poly$finalModel@coef[[1]] %*% final.svm_poly$finalModel@xmatrix[[1]]
+svm_coef <- data.frame(t(svm_coef))
+colnames(svm_coef) <- "Coefficients"
+svm_coef$DNA_regions <- c("17.2185", "12.1673", "5.695", "12.1672", "12.1679")
+
+print("Logistic regression weights")
+
+# Logistic regression for multiple classes has coefficients for every target level.
+# Therefore, we extract all the coefficients. We make a list in decreasing order based on absolute values.
+lr_coef <- coef(final.lr$finalModel, final.lr$finalModel$lambdaOpt)
+lr_coef_her2 <- lr_coef$`HER2+`[order(abs(lr_coef$`HER2+`), decreasing = T),]
+lr_coef_hr_plus <- lr_coef$`HR+`[order(abs(lr_coef$`HR+`), decreasing = T),]
+lr_coef_tirple_neg <- lr_coef$`Triple Neg`[order(abs(lr_coef$`Triple Neg`), decreasing = T),]
+
+print("her2")
+lr_coef_her2[1:3]
+print("hr+")
+lr_coef_hr_plus[1:26]
+print("Triple negative")
+lr_coef_tirple_neg[1:18]
+
+# ======== Accuracy plot ===========
+Model_accuracies <- data.frame(kNN.train = knn_model_evaluation$knn_evaluation$Accuracy_train,
+                               kNN.test = knn_model_evaluation$knn_evaluation$Accuracy_test,
+                               SVM.train = svm_poly_model_evaluation$svm_poly_evaluation$Accuracy_train,
+                               SVM.test = svm_poly_model_evaluation$svm_poly_evaluation$Accuracy_test,
+                               Logistic_regression.train = lr_model_evaluation$lr_evaluation$Accuracy_train,
+                               Logistic_regression.test = lr_model_evaluation$lr_evaluation$Accuracy_test)
+
+Model_accuracies <- Model_accuracies %>% gather(key = Assessment_method, value = Accuracy)
+Model_accuracies$Assessment_method <- factor(Model_accuracies$Assessment_method, levels = c("kNN.train", "kNN.test", "SVM.train", "SVM.test", "Logistic_regression.train", "Logistic_regression.test"), ordered = T)
+
+
+ggplot(data = Model_accuracies) +
+  geom_boxplot(mapping = aes(x = Assessment_method, y = Accuracy), outlier.shape=NA) +
+  geom_jitter(data = Model_accuracies[c(seq(101,200), seq(301, 400), seq(501,600)),], mapping = aes(x = Assessment_method, y = Accuracy, color = "Test data"), width = 0.2) +
+  geom_jitter(data = Model_accuracies[c(seq(1,100), seq(201, 300), seq(401,500)),], mapping = aes(x = Assessment_method, y = Accuracy, color = "Train data"), width = 0.2) +
+  ylim(0:1) +
+  geom_line(mapping = aes(x = Assessment_method, y = baseline_accuracy, group = 1, linetype = "Baseline model"), color = "red") +
+  ggtitle("Accuracy For Different Models") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, margin = margin(t= 28), colour = "Black")) +
+  scale_linetype_manual(name = "", values = "dashed") +
+  scale_color_manual(name = "Validation type", values=c("Green", "Blue")) +
+  scale_x_discrete(breaks = c("kNN.train", "kNN.test", "SVM.train", "SVM.test", "Logistic_regression.train", "Logistic_regression.test"), labels = c("kNN", "kNN", "SVM", "SVM", "Logistic_regression", "Logistic_regression"))
