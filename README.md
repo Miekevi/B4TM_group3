@@ -2,7 +2,7 @@
 
 The repo for group 3 for the course Bioinformatics for Translational Medicine.
 
-#Abstract
+## Abstract
 
 Motivation: In breast cancer, there are three receptor types: Estrogen Receptor, Progesterone Receptor,
 and Human Epidermal growth factor Receptor 2 that are responsible for three main subtypes: HER2+,
